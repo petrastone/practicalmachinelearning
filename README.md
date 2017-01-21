@@ -2,4 +2,4 @@
 
 ### Course Project
 
-See <https://petrastone.github.io/practicalmachinelearning/>
+See <a href="https://petrastone.github.io/practicalmachinelearning/" target="_blank">https://petrastone.github.io/practicalmachinelearning/</a>
