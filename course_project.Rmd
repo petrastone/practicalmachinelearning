@@ -1,0 +1,382 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Petra C. Stone"
+date: "1/18/2017"
+output:
+  html_document:
+    theme: readable
+    fig_caption: true
+    toc: true
+
+---
+<style>
+.scroller pre {
+  max-height: 200px;
+  overflow-y: auto;
+}
+</style>
+
+```{r setup, include=F}
+  knitr::opts_knit$set(root.dir = '/Users/petra/githubstuff/datascience/practicalmachinelearning')
+  knitr::opts_knit$set( dev = 'pdf' )
+```
+
+## Qualitative Activity Recognition of Weight Lifting Exercises
+This is a course project for the Practical Machine Learning Course (John Hopkins Data Science Specialization Track, Coursera). Using a dataset from a 2011 study[^WLE] on weight lifting, the project goal is to use machine learning to predict which technique was used when lifting the dumbell (the technically correct method or one of 4 common mistakes the users were asked to perform)[^2]. The goal of the original study was to determine if mistakes could be detected automatically by wearable devices and thereby provide user feedback on the quality of the exercise.
+
+### Project Brief
+
+> Predict the manner in which they did the exercise. This is the "classe" variable in the training set. 
+> You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the
+> choices you did. You will also use your prediction model to predict 20 different test cases.
+
+## Data Exploration
+The aim of exploration is to understand the data, reduce irrelevant or redundant features and select the most appropriate features for the models.
+The paper describes the data set. The exercises were performed over approx 2 minutes with each user doing 10 repetitions of each "classe" in sequence from A to E. The sensors had a sampling rate of 45Hz meaning approx 45 samples were taken per second. Comparing the description given in the paper to what I see in the training set my understanding of the data is that the 160 variables are composed of:
+
+* Identifier columns for row (`X`) and user (`user_name`)
+* Sampling window id (`num_window`) and a marker for calculation of derived features (`new_window`)
+* Sampling timestamps (`raw_timestamp_part_1`, `raw_timestamp_part_2`, `cvtd_timestamp`)
+* 52 raw sensor measurements per sample (from accelerometer, gyro and magnetoscope on the belt, arm, forearm and dumbell)
+* 100 derived features calculated for every approx 45 samples (variance, kurtosis etc. for each raw measurement in the window)
+* The `classe` variable (the outcome variable )
+
+```{r include=T, message=FALSE, warning=FALSE } 
+  # Load provided training set
+  origTraining <- read.csv("pml-training.csv", na.strings = c("NA","#DIV/0!") )
+  dim(origTraining)
+```
+
+<div class="scroller">
+```{r include=T, message=FALSE, warning=FALSE }
+  idCols <- c(
+      "X", "user_name", "new_window", 
+      "raw_timestamp_part_1", "raw_timestamp_part_2", 
+      "cvtd_timestamp", "num_window"
+    )
+  idVars <- origTraining[, names(origTraining) %in% idCols  ]
+  str( idVars )
+```
+
+We can see that the derived features are mostly NA values, seeing as they were only calculated for every 45 samples:
+```{r include=T, message=FALSE, warning=FALSE } 
+  ptn <- "avg_|var_|stddev_|max_|min_|amplitude_|kurtosis_|skewness_"
+  derivedFeatures <- origTraining[,grep(ptn, names(origTraining))]
+  mean(is.na(derivedFeatures))
+  str( derivedFeatures )
+```  
+
+The raw measurements do not contain any missing values:
+```{r include=T, message=FALSE, warning=FALSE } 
+  rawFeatures <- origTraining[, -grep(ptn, names( origTraining ))  ]
+  rawFeatures <- rawFeatures[, !names(rawFeatures) %in% c(idCols, "classe") ]
+  mean(is.na(rawFeatures))
+  str( rawFeatures )
+```
+</div>
+
+### Feature Selection
+We need to disgard the id columns and the derived features columns. This is because:
+
+1. The id and timestamp columns would bias the model and are not relevant to our prediction task.
+2. The derived features are mostly 98% NA and would not help in prediction. Also we are not predicting from window summaries but from discrete samples, using the raw measurements.
+
+```{r include=T, message=FALSE, warning=FALSE } 
+  cleanTraining <- origTraining[, !names(origTraining) %in% c(idCols, names(derivedFeatures)) ] 
+```
+
+This leaves us with a dataset of 52 predictors and the `classe` variable.
+```{r include=T, message=FALSE, warning=FALSE } 
+  dim(cleanTraining)
+```
+
+### Visualisation
+Let's look at these remaining 52 predictors, looking for potential outliers, skewness, imbalances in outcome/predictors, and explainable groups of points/patterns.
+
+```{r include=T, warning=F, message=FALSE, fig.align='center', fig.height=12, fig.width=12}        
+ 
+  require(reshape2)
+  # Plot the features
+  m <- melt( cleanTraining, id.vars=c('classe')  )
+  m$variable <- factor(m$variable, levels = sort( levels(m$variable) ) )
+
+  require(ggplot2)
+  ggplot( m,
+    aes(value, color=classe ) ) +
+    geom_density() +
+    facet_wrap(~variable, ncol=6, scales="free") +
+    ggtitle( "52 Features vs. Classe") +
+    theme_bw() +
+    theme( legend.position="bottom") 
+    
+```
+
+Looking at the distribution of the variables they don't seem normally distributed and would suit a model that does not make assumptions about the distribution of the data (non-parametric) as opposed to a linear model. The dumbell and forearm gyros are particularly skewed and some of the other metrics are multi-modal eg. `roll_belt`, `yaw_forearm`.
+ 
+We can check for near zero vars.
+```{r include=T, message=FALSE, warning=FALSE }
+  require(caret)
+  # Check for near zero variance predictors
+  nzv <- nearZeroVar(cleanTraining, saveMetrics=T)
+  length( cleanTraining[,nzv$nzv==T] ); length( cleanTraining[,nzv$zeroVar==T] )
+```
+
+
+There are none so we can proceed with evaluating some models by splitting the cleaned training set into training and validation sets and then validating and tuning the models based on their performance on the validation set.
+
+```{r include=T, message=FALSE, warning=FALSE }
+  # Set a seed to make the research reproducible
+  set.seed(91801) 
+  
+  # Subset the training set into a validation and training set
+  inTrain <- createDataPartition(cleanTraining$classe, p=0.6, list=FALSE)
+  training <- cleanTraining[inTrain,]
+  validation <- cleanTraining[-inTrain,]
+```
+
+## Train Models
+I am comparing 6 models (from simpler to more complex):
+
+1. Naive Bayes Classification
+2. K-Nearest Neighbours Classification
+3. CART
+4. Random Forest
+5. GBM
+6. XgBoost
+
+The first 2 (Bayes and KNN) are the simplest approaches. KNN requires some transformation of the data (standardising mean=0, stddev=1). The last 4 are tree-based. In order to get some perspective on the more complex final 3 tree ensemble methods I modeled a single decision tree to illustrate what these more complex algorithms are based on. It's important to understand the tree to understand the forest.
+
+For cross-validation I will use 5-Fold Cross Validation to train the models and then estimate the out of sample error using the accuracy measure on the validation set. I used 5-Fold because rather than the default 10 in order to speed up training.
+Leveraging parallel processing in R really helps to speed this step up:
+
+```{r trainingChunk, include=T, warning=F, message=F, cache=T }
+  require(parallel)
+  require(doParallel)
+  
+  fitControl <- trainControl(method = "cv", number = 5, verboseIter=F, allowParallel = T)
+  
+  set.seed(81978)
+  
+  # Use parallel processing
+  cluster <- makeCluster(detectCores() - 1)
+  registerDoParallel(cluster)
+  
+  # Naive Bayes
+  system.time( nbFit <- train(classe~., data=training, method="nb", trControl = fitControl) )
+  
+  # KNN
+  # predict.train will automatically apply the same transformation as the fit to any new data
+  knnGrid <- expand.grid(.k=1:7)
+  system.time( knnFit <- train(classe~., data=training, method="knn", preProcess=c('center','scale'), tuneGrid=knnGrid, trControl=fitControl) )
+  
+  # CART
+  cartGrid<- expand.grid(.cp=0.0001)
+  system.time( treeFit <- train(classe~., data=training, method="rpart", trControl=fitControl, tuneGrid= cartGrid) )
+  
+  # Random Forest
+  system.time( rfFit <- train(classe~., data=training, method="rf", trControl = fitControl ) )
+   
+  # GBM
+  gbmGrid <- expand.grid( .interaction.depth = (1:5)*2, .n.trees = (3:10)*25, .shrinkage = .1, .n.minobsinnode = 10 )
+  system.time( gbmFit <- train(classe ~ ., training, method = "gbm", trControl= fitControl, verbose=F, tuneGrid = gbmGrid) )
+
+  # XGB
+  system.time( xgbFit <- train(classe ~ ., data = training, method = "xgbTree", trControl= fitControl, verbose=F) )
+  
+  # Stop parallel processing
+  stopCluster(cluster)
+  registerDoSEQ()
+```
+
+<div class="scroller">
+```{r include=T, warning=F, message=F }
+  nbFit
+  knnFit
+  treeFit
+  rfFit
+  gbmFit
+  xgbFit
+```
+</div>
+
+## Model Evaluation
+The confusionMatrix function in caret helps to understand how the model would perform out of sample:
+
+```{r include=T, warning=F, message=F  }
+  # Naive Bayes
+  nbPredict <- predict( nbFit, validation )
+  nbAccuracy <- confusionMatrix(nbPredict, validation$classe)$overall[1]
+  
+  # KNN
+  knnPredict <- predict(knnFit, validation )
+  knnAccuracy <- confusionMatrix(knnPredict, validation$classe)$overall[1]
+  
+  # CART
+  treePredict <- predict(treeFit, validation )
+  treeAccuracy <- confusionMatrix(treePredict, validation$classe)$overall[1]
+  
+  # RF
+  rfPredict <- predict(rfFit, validation )
+  rfAccuracy <- confusionMatrix(rfPredict, validation$classe)$overall[1]
+  
+  # GBM
+  gbmPredict <- predict(gbmFit, validation )
+  gbmAccuracy <- confusionMatrix(gbmPredict, validation$classe)$overall[1]
+  
+  # XGB
+  xgbPredict <- predict(xgbFit, validation )
+  xgbAccuracy <- confusionMatrix(xgbPredict, validation$classe)$overall[1]
+```
+
+### Out of Sample Error
+This table compares the accuracy rate of the 6 models when cross-validated with the held-out validation set:
+```{r include=T, warning=F, message=F, echo=F  }
+  model <- c('Naive Bayes','KNN','CART','Random Forest', 'GBM (tuned)', 'xgbTree')
+  notes <- c('5-Fold CV','5-Fold CV','5-Fold CV', '5-Fold CV','5-Fold CV','5-Fold CV')
+  params <- c('default','k=1-7','cp=.0001','default','tuned n.trees, interaction.depth', 'default')
+  timing_mins <- c( 65.292/60, 63.605/60,  2.809/60, 232.394/60, 572.539/60, 714.519/60)
+  accuracy <- c(nbAccuracy, knnAccuracy, treeAccuracy, rfAccuracy, gbmAccuracy, xgbAccuracy)
+  
+  modelSummary <- data.frame( model, notes, params, timing_mins, accuracy )
+  
+  require(knitr)
+  kable(modelSummary, digits=4, caption="Comparing Out of Sample Error on 6 Models")
+```
+
+The 3 tree ensemble methods had the highest rate of accuracy (>.99), with KNN doing well at .98, CART doing reasonably well at .92 and Naive Bayes performing poorly at .73. xgbTree and Random Forests performed very well "out of the box" without any tuning, but xgbTree took 3 times longer than Random Forest. KNN, CART and GBM all needed additional tuning as their initial "out of the box" results were poor.
+
+### Variable Importance for models
+Variable importance in tree models can aid in feature selection, helping us to understand which covariates were most important. The Caret package provides an importance metric on a scale 0-100. For example, the importance metric for Random Forest is based on averaged Gini decrease in node impurities over all trees in the forest. Other models may use different criteria for importance.
+
+
+```{r echo=FALSE, warning=F, message=F, fig.width=12, fig.height=7, echo=F  }
+  #layout(t(1:2))
+  #plot( varImp(treeFit), main="CART Var Importance" )
+  #plot( varImp(rfFit), main="Random Forest Var Importance" )
+  #plot( varImp(gbmFit), main="GBM Var Importance" )
+  #plot( varImp(xgbFit), main="XGB Var Importance" )
+  
+  # Plot compared var importance
+  l1 <- varImp(treeFit, scale=F)$importance
+  l2 <- varImp(rfFit, scale=F)$importance
+  l3 <- varImp(gbmFit, scale=F)$importance
+  l4 <- varImp(xgbFit, scale=F)$importance
+  
+  list2DF <- function(x,yName) {
+    x$metric <- factor(row.names(x))
+    colnames(x) <- c(yName,'variable')
+    return(x)
+  }
+  require(dplyr)
+
+  combinedVarImps <- list( list2DF(l1,'cart'), 
+                      list2DF(l2,'rf'),
+                      list2DF(l3,'gbm'),
+                      list2DF(l4,'xgb')) %>%
+    Reduce(function(dtf1,dtf2) left_join(dtf1,dtf2,by="variable"), .) 
+  
+  long_data <- melt(combinedVarImps, by=c(variable, cart, rf, gbm, xgb),variable.name='model')
+  
+  long_data <- long_data %>%
+  arrange( value ) %>% 
+  mutate(variable = factor(variable,unique(variable)))
+  
+  ggplot(long_data, 
+          aes(x=variable, y=value, group=model, fill=model) ) +
+            geom_bar(stat = "identity") +
+            facet_grid(~model) +
+    coord_flip() +
+    ylab("Importance")+ xlab("")+
+    ggtitle('Comparing Variable Importance for 4 Tree Models')
+  
+
+```
+
+### Accuracy
+The accuracy graphs visualise the tuning parameters selected during cross-validation for the best fit. Models can be tuned with different parameters to see if accuracy improves.
+
+```{r cache=F, warning=F, message=F, fig.width=4.5, fig.height=6, echo=F  }
+  layout(t(1:2))
+  
+  plot(nbFit, main="Naive Bayes Accuracy")
+  plot(knnFit, main="KNN Accuracy")
+  plot(rfFit, main="Random Forest Accuracy")
+  plot(gbmFit, main="GBM Accuracy")
+  #plot(xgbFit, main="XGB Accuracy")
+  
+  #names( xgbFit$results )
+  ggplot(xgbFit$results, aes(x = as.factor(eta), y = Accuracy, color = factor(max_depth))) +
+  geom_jitter(width=.5) + 
+  theme_bw() + 
+  facet_grid(~nrounds) +
+  theme( legend.position="bottom") +
+  xlab("eta") +
+  guides(color=guide_legend(title="max_depth")) +
+  ggtitle("XGB Accuracy")
+```
+
+```{r cache=F, warning=F, message=F, fig.width=12, fig.height=6, echo=F  } 
+    # Plot a pruned version of the CART tree
+  require(rpart.plot)
+  tinyTree <- prune(treeFit$finalModel, cp = treeFit$finalModel$cptable[5,][1]  )
+  rpart.plot( tinyTree, extra = 3, main= paste0("Misclassification Rate\n(Pruned CART Tree with ",round(treeAccuracy,3)," accuracy)\n showing 6 of 190 splits") )
+  
+```
+
+## Predict 20 Test Cases
+We have been given 20 samples to predict for the quiz:
+```{r include=T, warning=F, message=F }
+  quiz <- read.csv("pml-testing.csv", na.strings = c("NA","#DIV/0!") )
+  # On ultimate test set
+  q0 <- predict(nbFit, quiz )
+  q1 <- predict(knnFit, quiz )
+  q2 <- predict(treeFit, quiz )
+  q3 <- predict(rfFit, quiz )
+  q4 <- predict(gbmFit, quiz )
+  q5 <- predict(xgbFit, quiz )
+```
+
+Naive Bayes and CART disagreed with the other 4 models (which all had the same answers):
+```{r include=T, warning=F, message=F }  
+  result <- data.frame( problem_id=quiz$problem_id, naive=q0, knn=q1, cart=q2, rf=q3, gbm=q4, xgb=q5)
+  result
+```
+
+## Appendix
+### Predict on actual test data
+It would be interesting to see how the models perform on the entire unseen portion of the WLE dataset which can be downloaded from the site. The training set we were provided with only contained 50% of the samples so we can test on the other 50% for a better out of sample estimate:
+```{r include=T, warning=F, message=F }  
+  allData <- read.csv("raw.csv", na.strings = c("NA","#DIV/0!") )
+  allData <- allData[, !names(allData) %in% c(idCols, names(derivedFeatures)) ] 
+
+  require(dplyr)
+  unseenData <- anti_join(allData, origTraining)
+  dim(unseenData)
+  unseenData <- unseenData[complete.cases(unseenData),]
+  dim(unseenData)
+  
+  q0 <- confusionMatrix( predict(nbFit,  unseenData ), unseenData$classe )$overall[1]
+  q1 <- confusionMatrix( predict(knnFit, unseenData ), unseenData$classe )$overall[1]
+  q2 <- confusionMatrix( predict(treeFit, unseenData ), unseenData$classe )$overall[1]
+  q3 <- confusionMatrix( predict(rfFit, unseenData ), unseenData$classe )$overall[1]
+  q4 <- confusionMatrix( predict(gbmFit, unseenData ), unseenData$classe )$overall[1]
+  q5 <- confusionMatrix( predict(xgbFit, unseenData ), unseenData$classe )$overall[1]
+```
+
+It's quite surprising how well each model performed on the unseen data:
+```{r include=T, warning=F, message=F, echo= F }    
+  result <- data.frame( dataset=c('wle', 'validation'), 
+                        naive=c(q0,nbAccuracy), 
+                        knn=c(q1,knnAccuracy), 
+                        cart=c(q2,treeAccuracy), 
+                        rf=c(q3,rfAccuracy), 
+                        gbm=c(q4,gbmAccuracy), 
+                        xgb=c(q5,xgbAccuracy))
+  kable(result, digits=4, caption="Comparing Accuracy on 6 Models for Validation Set and Unseen data")
+```
+
+
+[^WLE]: Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+<http://groupware.les.inf.puc-rio.br/har#ixzz4Vv3AVlgw> <http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf>
+
+[^2]: The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. The participants wore devices which measured accelerometer, magnetometer and gyroscope statistics on the arm, belt, glove and dumbell. They were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes.
