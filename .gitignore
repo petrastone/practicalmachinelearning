@@ -34,3 +34,5 @@ vignettes/*.pdf
 
 # CSV Data
 *.csv
+# R Project Files
+*_files/
