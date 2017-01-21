@@ -296,7 +296,7 @@ img {
 <h3>Feature Selection</h3>
 <p>We need to disgard the id columns and the derived features columns. This is because:</p>
 <ol style="list-style-type: decimal">
-<li>We are not predicting on from window summaries test set but from discrete samples, using the raw measurements.</li>
+<li>We are not predicting from window summaries in the test set but from discrete samples, using raw measurements.</li>
 <li>The id and timestamp columns would bias the model and are not relevant to our prediction task.</li>
 <li>The derived features are mostly 98% NA and would not help in prediction.</li>
 </ol>
@@ -330,7 +330,7 @@ img {
   length( cleanTraining[,nzv$nzv==T] ); length( cleanTraining[,nzv$zeroVar==T] )</code></pre>
 <pre><code>## [1] 0</code></pre>
 <pre><code>## [1] 0</code></pre>
-<p>There are none so we can proceed with evaluating some models. First we need to split the cleaned training set into subsets of training and validation sets so we can validatea/tune the models based on their performance.</p>
+<p>There are none so we can proceed with evaluating some models. First we need to split the cleaned training set into subsets of training and validation sets so we can validate/tune the models based on their performance.</p>
 <pre class="r"><code>  # Set a seed to make the research reproducible
   set.seed(91801) 
   
