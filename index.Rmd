@@ -1,12 +1,13 @@
 ---
 title: "Practical Machine Learning Course Project"
 author: "Petra C. Stone"
-date: "1/18/2017"
+date: "1/21/2017"
 output:
   html_document:
     theme: readable
     fig_caption: true
     toc: true
+    toc_depth: 2
 
 ---
 <style>
@@ -31,8 +32,9 @@ This is a course project for the Practical Machine Learning Course (John Hopkins
 > choices you did. You will also use your prediction model to predict 20 different test cases.
 
 ## Data Exploration
-The aim of exploration is to understand the data, reduce irrelevant or redundant features and select the most appropriate features for the models.
-The paper describes the data set. The exercises were performed over approx 2 minutes with each user doing 10 repetitions of each "classe" in sequence from A to E. The sensors had a sampling rate of 45Hz meaning approx 45 samples were taken per second. Comparing the description given in the paper to what I see in the training set my understanding of the data is that the 160 variables are composed of:
+The aim of exploration is to understand the data, reduce irrelevant or redundant features and select the most appropriate features. The paper describes the data set. Each user did 10 repetitions of each "classe" in sequence from A to E. The sensors had a sampling rate of 45Hz (approx 45 samples per second) taking raw measurements from the accelerometors, gyroscopes and magnetometers on the belt, forearm, arm and dumbbell. Aggregate window summaries were calculated at windows of approx 1 second.
+
+Outline of the data:
 
 * Identifier columns for row (`X`) and user (`user_name`)
 * Sampling window id (`num_window`) and a marker for calculation of derived features (`new_window`)
@@ -78,8 +80,10 @@ The raw measurements do not contain any missing values:
 ### Feature Selection
 We need to disgard the id columns and the derived features columns. This is because:
 
-1. The id and timestamp columns would bias the model and are not relevant to our prediction task.
-2. The derived features are mostly 98% NA and would not help in prediction. Also we are not predicting from window summaries but from discrete samples, using the raw measurements.
+1. We are not predicting from window summaries in the test set but from discrete samples, using raw measurements.
+2. The id and timestamp columns would bias the model and are not relevant to our prediction task.
+2. The derived features are mostly 98% NA and would not help in prediction.
+
 
 ```{r include=T, message=FALSE, warning=FALSE } 
   cleanTraining <- origTraining[, !names(origTraining) %in% c(idCols, names(derivedFeatures)) ] 
@@ -91,7 +95,7 @@ This leaves us with a dataset of 52 predictors and the `classe` variable.
 ```
 
 ### Visualisation
-Let's look at these remaining 52 predictors, looking for potential outliers, skewness, imbalances in outcome/predictors, and explainable groups of points/patterns.
+Let's look at these remaining 52 predictors, looking for outliers, skewness, imbalances in outcome/predictors, and explainable groups of points/patterns.
 
 ```{r include=T, warning=F, message=FALSE, fig.align='center', fig.height=12, fig.width=12}        
  
@@ -111,7 +115,7 @@ Let's look at these remaining 52 predictors, looking for potential outliers, ske
     
 ```
 
-Looking at the distribution of the variables they don't seem normally distributed and would suit a model that does not make assumptions about the distribution of the data (non-parametric) as opposed to a linear model. The dumbell and forearm gyros are particularly skewed and some of the other metrics are multi-modal eg. `roll_belt`, `yaw_forearm`.
+The distribution of the variables don't seem normally distributed and would suit a model that does not make assumptions about the distribution of the data (non-parametric) as opposed to a linear model. The dumbell and forearm gyros are particularly skewed and some of the other metrics are multi-modal eg. `roll_belt`, `yaw_forearm`.
  
 We can check for near zero vars.
 ```{r include=T, message=FALSE, warning=FALSE }
@@ -122,7 +126,7 @@ We can check for near zero vars.
 ```
 
 
-There are none so we can proceed with evaluating some models by splitting the cleaned training set into training and validation sets and then validating and tuning the models based on their performance on the validation set.
+There are none so we can proceed with evaluating some models. First we need to split the cleaned training set into subsets of training and validation sets so we can validate/tune the models based on their performance.
 
 ```{r include=T, message=FALSE, warning=FALSE }
   # Set a seed to make the research reproducible
@@ -144,9 +148,9 @@ I am comparing 6 models (from simpler to more complex):
 5. GBM
 6. XgBoost
 
-The first 2 (Bayes and KNN) are the simplest approaches. KNN requires some transformation of the data (standardising mean=0, stddev=1). The last 4 are tree-based. In order to get some perspective on the more complex final 3 tree ensemble methods I modeled a single decision tree to illustrate what these more complex algorithms are based on. It's important to understand the tree to understand the forest.
+The first 2 models (Bayes and KNN) are the simplest approaches. KNN requires some transformation of the data (standardising mean=0, stddev=1). The last 4 are tree-based. In order to get some perspective on the more complex final 3 tree ensemble methods I modeled a single decision tree to illustrate the building blocks of what these more complex algorithms are based on.
 
-For cross-validation I will use 5-Fold Cross Validation to train the models and then estimate the out of sample error using the accuracy measure on the validation set. I used 5-Fold because rather than the default 10 in order to speed up training.
+For cross-validation I used 5-Fold Cross Validation to train the models. I used 5-Fold because rather than the default 10 in order to speed up training. I then estimated the out of sample error using the accuracy measure on the validation set.
 Leveraging parallel processing in R really helps to speed this step up:
 
 ```{r trainingChunk, include=T, warning=F, message=F, cache=T }
@@ -200,7 +204,7 @@ Leveraging parallel processing in R really helps to speed this step up:
 </div>
 
 ## Model Evaluation
-The confusionMatrix function in caret helps to understand how the model would perform out of sample:
+The confusionMatrix function in Caret shows how the model performs out of sample:
 
 ```{r include=T, warning=F, message=F  }
   # Naive Bayes
@@ -248,19 +252,12 @@ The 3 tree ensemble methods had the highest rate of accuracy (>.99), with KNN do
 ### Variable Importance for models
 Variable importance in tree models can aid in feature selection, helping us to understand which covariates were most important. The Caret package provides an importance metric on a scale 0-100. For example, the importance metric for Random Forest is based on averaged Gini decrease in node impurities over all trees in the forest. Other models may use different criteria for importance.
 
-
 ```{r echo=FALSE, warning=F, message=F, fig.width=12, fig.height=7, echo=F  }
-  #layout(t(1:2))
-  #plot( varImp(treeFit), main="CART Var Importance" )
-  #plot( varImp(rfFit), main="Random Forest Var Importance" )
-  #plot( varImp(gbmFit), main="GBM Var Importance" )
-  #plot( varImp(xgbFit), main="XGB Var Importance" )
-  
-  # Plot compared var importance
-  l1 <- varImp(treeFit, scale=F)$importance
-  l2 <- varImp(rfFit, scale=F)$importance
-  l3 <- varImp(gbmFit, scale=F)$importance
-  l4 <- varImp(xgbFit, scale=F)$importance
+  # Compare var importance
+  l1 <- varImp(treeFit)$importance
+  l2 <- varImp(rfFit)$importance
+  l3 <- varImp(gbmFit)$importance
+  l4 <- varImp(xgbFit)$importance
   
   list2DF <- function(x,yName) {
     x$metric <- factor(row.names(x))
@@ -288,23 +285,20 @@ Variable importance in tree models can aid in feature selection, helping us to u
     coord_flip() +
     ylab("Importance")+ xlab("")+
     ggtitle('Comparing Variable Importance for 4 Tree Models')
-  
 
 ```
 
 ### Accuracy
-The accuracy graphs visualise the tuning parameters selected during cross-validation for the best fit. Models can be tuned with different parameters to see if accuracy improves.
+The accuracy graphs visualise the tuning parameters selected during training for the best fit. Models can be tuned with different parameters to see if accuracy improves.
 
-```{r cache=F, warning=F, message=F, fig.width=4.5, fig.height=6, echo=F  }
+```{r cache=F, warning=F, message=F, fig.width=4.5, fig.height=4.5, echo=F  }
   layout(t(1:2))
   
   plot(nbFit, main="Naive Bayes Accuracy")
   plot(knnFit, main="KNN Accuracy")
   plot(rfFit, main="Random Forest Accuracy")
   plot(gbmFit, main="GBM Accuracy")
-  #plot(xgbFit, main="XGB Accuracy")
-  
-  #names( xgbFit$results )
+
   ggplot(xgbFit$results, aes(x = as.factor(eta), y = Accuracy, color = factor(max_depth))) +
   geom_jitter(width=.5) + 
   theme_bw() + 
@@ -327,7 +321,8 @@ The accuracy graphs visualise the tuning parameters selected during cross-valida
 We have been given 20 samples to predict for the quiz:
 ```{r include=T, warning=F, message=F }
   quiz <- read.csv("pml-testing.csv", na.strings = c("NA","#DIV/0!") )
-  # On ultimate test set
+  
+  # Predict on ultimate test set
   q0 <- predict(nbFit, quiz )
   q1 <- predict(knnFit, quiz )
   q2 <- predict(treeFit, quiz )
